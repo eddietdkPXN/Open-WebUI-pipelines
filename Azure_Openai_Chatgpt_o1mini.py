@@ -6,94 +6,103 @@ import os
 
 class Pipeline:
     class Valves(BaseModel):
-        # You can add your custom valves here.
+        # Configuration for Azure OpenAI
         AZURE_OPENAI_API_KEY: str
         AZURE_OPENAI_ENDPOINT: str
+        AZURE_OPENAI_DEPLOYMENT_NAME: str
         AZURE_OPENAI_API_VERSION: str
-        AZURE_OPENAI_MODELS: str
-        AZURE_OPENAI_MODEL_NAMES: str
 
     def __init__(self):
-        self.type = "manifold"
-        self.name = "Azure OpenAI: "
+        # Set the name of the pipeline
+        self.name = "Azure o1-mini"
         self.valves = self.Valves(
             **{
                 "AZURE_OPENAI_API_KEY": os.getenv("AZURE_OPENAI_API_KEY", "your-azure-openai-api-key-here"),
-                "AZURE_OPENAI_ENDPOINT": os.getenv("AZURE_OPENAI_ENDPOINT", "your-azure-openai-endpoint-here"),
-                "AZURE_OPENAI_API_VERSION": os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01"),
-                "AZURE_OPENAI_MODELS": os.getenv("AZURE_OPENAI_MODELS", "gpt-35-turbo;gpt-4o;o1-mini"),
-                "AZURE_OPENAI_MODEL_NAMES": os.getenv("AZURE_OPENAI_MODEL_NAMES", "GPT-35 Turbo;GPT-4o;GPT-o1-mini"),
+                "AZURE_OPENAI_ENDPOINT": os.getenv("AZURE_OPENAI_ENDPOINT", "https://xxx.openai.azure.com"), # replace here
+                "AZURE_OPENAI_DEPLOYMENT_NAME": os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "o1-mini"),
+                "AZURE_OPENAI_API_VERSION": os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview"),
             }
         )
-        self.set_pipelines()
-        pass
-
-    def set_pipelines(self):
-        models = self.valves.AZURE_OPENAI_MODELS.split(";")
-        model_names = self.valves.AZURE_OPENAI_MODEL_NAMES.split(";")
-        self.pipelines = [
-            {"id": model, "name": name} for model, name in zip(models, model_names)
-        ]
-        print(f"azure_openai_manifold_pipeline - models: {self.pipelines}")
-        pass
-
-    async def on_valves_updated(self):
-        self.set_pipelines()        
 
     async def on_startup(self):
-        # This function is called when the server is started.
-        print(f"on_startup:{__name__}")
-        pass
+        # Function called when the server starts
+        print(f"on_startup: {__name__}")
 
     async def on_shutdown(self):
-        # This function is called when the server is stopped.
-        print(f"on_shutdown:{__name__}")
-        pass
+        # Function called when the server shuts down
+        print(f"on_shutdown: {__name__}")
 
     def pipe(
-            self, user_message: str, model_id: str, messages: List[dict], body: dict
+        self, user_message: str, model_id: str, messages: List[dict], body: dict
     ) -> Union[str, Generator, Iterator]:
-        # This is where you can add your custom pipelines like RAG.
-        print(f"pipe:{__name__}")
+        """
+        Processes the input through the Azure OpenAI pipeline.
 
-        print(messages)
-        print(user_message)
+        Args:
+            user_message (str): The message from the user.
+            model_id (str): The ID of the model to use.
+            messages (List[dict]): List of message dictionaries.
+            body (dict): The request body containing parameters.
+
+        Returns:
+            Union[str, Generator, Iterator]: The response from Azure OpenAI.
+        """
+        print(f"pipe: {__name__}")
+
+        print("Messages:", messages)
+        print("User Message:", user_message)
 
         headers = {
             "api-key": self.valves.AZURE_OPENAI_API_KEY,
             "Content-Type": "application/json",
         }
 
-        url = f"{self.valves.AZURE_OPENAI_ENDPOINT}/openai/deployments/{model_id}/chat/completions?api-version={self.valves.AZURE_OPENAI_API_VERSION}"
+        url = (
+            f"{self.valves.AZURE_OPENAI_ENDPOINT}/openai/deployments/{self.valves.AZURE_OPENAI_DEPLOYMENT_NAME}/chat/completions"
+            f"?api-version={self.valves.AZURE_OPENAI_API_VERSION}"
+        )
 
-        allowed_params = {'messages', 'temperature', 'role', 'content', 'contentPart', 'contentPartImage',
-                          'enhancements', 'dataSources', 'n', 'stream', 'stop', 'max_tokens', 'presence_penalty',
-                          'frequency_penalty', 'logit_bias', 'user', 'function_call', 'funcions', 'tools',
-                          'tool_choice', 'top_p', 'log_probs', 'top_logprobs', 'response_format', 'seed'}
-        # remap user field
+        allowed_params = {
+            'messages', 'temperature', 'role', 'content', 'contentPart', 'contentPartImage',
+            'enhancements', 'data_sources', 'n', 'stream', 'stop', 'max_tokens', 'presence_penalty',
+            'frequency_penalty', 'logit_bias', 'user', 'function_call', 'functions', 'tools',
+            'tool_choice', 'top_p', 'log_probs', 'top_logprobs', 'response_format', 'seed'
+        }
+
+        # Remap 'user' field if necessary
         if "user" in body and not isinstance(body["user"], str):
-            body["user"] = body["user"]["id"] if "id" in body["user"] else str(body["user"])
+            body["user"] = body["user"].get("id", str(body["user"]))
+
+        # Filter the body to include only allowed parameters
         filtered_body = {k: v for k, v in body.items() if k in allowed_params}
-        # log fields that were filtered out as a single line
+
+        # Log any dropped parameters
         if len(body) != len(filtered_body):
-            print(f"Dropped params: {', '.join(set(body.keys()) - set(filtered_body.keys()))}")
+            dropped = set(body.keys()) - set(filtered_body.keys())
+            print(f"Dropped params: {', '.join(dropped)}")
 
         try:
-            r = requests.post(
+            response = requests.post(
                 url=url,
                 json=filtered_body,
                 headers=headers,
-                stream=True,
+                stream=filtered_body.get("stream", False),
             )
 
-            r.raise_for_status()
-            if body["stream"]:
-                return r.iter_lines()
-            else:
-                return r.json()
-        except Exception as e:
-            if r:
-                text = r.text
-                return f"Error: {e} ({text})"
-            else:
-                return f"Error: {e}"
+            response.raise_for_status()
+
+            if filtered_body.get("stream"):
+                return response.iter_lines()
+
+            # Parse and return JSON response
+            return response.json()
+
+        except requests.RequestException as e:
+            error_message = f"Request failed: {e}"
+            if response is not None:
+                try:
+                    error_details = response.json()
+                    error_message += f" | Details: {error_details}"
+                except ValueError:
+                    error_message += f" | Response Text: {response.text}"
+            return f"Error: {error_message}"
